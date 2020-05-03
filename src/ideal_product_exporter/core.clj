@@ -40,21 +40,6 @@
   [case-name]
   (list 'def (vary-meta case-name assoc :dynamic true)))
 
-;;; SPEC
-(s/def ::same-n-of-cells #(apply = (map count %)))
-(s/def ::same-brands #(apply = (map first (rest %))))
-(s/def ::valid-net-prices
-  (fn [candidate]
-    (let [net-price-re #"[\d,]+\.\d+"]
-      (->> candidate
-           (rest)
-           (map last)
-           (every? #(re-matches net-price-re %))))))
-(s/def :ideal/inventory-export (s/and ::same-brands
-                                      ::valid-net-prices
-                                      ::same-n-of-cells
-                                      (s/coll-of vector? :distinct true)))
-
 ;;; CODE
 
 (deferror *invalid-product-record-file-error*)
@@ -63,9 +48,29 @@
 (deferrorcase *keep-value*)
 (deferrorcase *use-value*)
 
-(defn parse-csv-row
+(def string-or-number? #(or (juxt number? string?)))
+
+(s/def ::dollar-w-comma-str (s/and string? #(re-matches #"[\d,]+\.\d+" %)))
+(s/def ::csv-data-row (s/coll-of string?))
+(s/def ::csv-data (s/cat :header (s/? ::csv-data-row)
+                         :rows (s/* ::csv-data-row)))
+(s/def ::pp-header (s/coll-of keyword? :distinct true))
+(s/def ::pp-map (s/map-of keyword? string-or-number?))
+
+(s/fdef csv-row->pp-map
+  :args (s/alt :unary (s/cat :header ::pp-header)
+               :binary (s/cat :header ::pp-header :row ::csv-data-row))
+  :ret (s/alt :curried fn?
+              :applied ::pp-map)
+  :fn (s/and #(condp get-in %
+                [:ret :applied] ; function has been applied
+                (let [arg-rows (get-in % [:args :binary :rows])
+                      ret-rows (get-in % [:ret :applied])]
+                  (<= (count ret-rows) (count arg-rows))) ; return should be equal or shorter
+                true))) ; otherwise true
+(defn csv-row->pp-map
   ([header] ;; partial
-   #(parse-csv-row header %))
+   #(csv-row->pp-map header %))
   ([header row]
    (if (and (= (count header) (count row))) ; add validations to `and` form
      (zipmap header row)
@@ -74,21 +79,24 @@
         "Row was not well formed, couldn't use."
         {:data row})))))
 
-(defn parse-csv [[header & rows]]
-  (let [row-parser (->> (map keywordize header) parse-csv-row)]
+(s/fdef csv->pp-maps
+  :args ::csv-data
+  :ret (s/coll-of ::pp-map :distinct true)
+  :fn (fn [{args :args ret :ret}]
+        (<= (count ret) (count (:rows args)))))
+
+(defn csv->pp-maps [[header & rows]]
+  (let [row-parser (->> (map keywordize header) csv-row->pp-map)]
     (keep #(binding [*skip-value* (constantly nil)] ; condition case. keep skips nil values.
             row-parser %) rows)))
-    ;; (binding [*skip-value* (constantly nil)]
-    ;;   (keep row-parser rows))))
+
 
 (def test-csv-data (with-open [reader (io/reader "/Users/cooperlebrun/RDP_Share/husq_ppl.TXT")]
                      (doall
                       (csv/read-csv reader))))
 
-; Data has invalid rows
-(->> test-csv-data (take 3) (map count))
 
-; doesn't raise error
-(binding [*invalid-product-record-error* *skip-value*] (parse-csv test-csv-data))
-; raises error
-(parse-csv test-csv-data)
+;; doesn't raise error
+;(binding [*invalid-product-record-error* *skip-value*] (csv->pp-maps test-csv-data))
+;; raises error
+;(parse-csv test-csv-data)
